@@ -108,14 +108,18 @@ void SPoseFrom2d::computeRegistration(::fwCore::HiResClock::HiResClockType times
                 std::numeric_limits< ::fwCore::HiResClock::HiResClockType >::max();
             for(size_t i = 0; i < this->getKeyGroupSize(s_MARKERTL_INPUT); ++i)
             {
-                auto markerTL = this->getInput< ::arData::MarkerTL >(s_MARKERTL_INPUT, i);
-                ::fwCore::HiResClock::HiResClockType timestamp = markerTL->getNewerTimestamp();
-                if(timestamp <= 0.)
+                auto markerTL   = this->getInput< ::arData::MarkerTL >(s_MARKERTL_INPUT, i);
+                auto closestObj = markerTL->getClosestObject(timestamp, ::arData::BufferTL::PAST);
+                if(closestObj)
+                {
+                    auto timestamp = closestObj->getTimestamp();
+                    newerTimestamp = std::min(timestamp, newerTimestamp);
+                }
+                else
                 {
                     OSLM_WARN("No marker found in a timeline for timestamp '"<<timestamp<<"'.");
                     return;
                 }
-                newerTimestamp = std::min(timestamp, newerTimestamp);
             }
 
             m_lastTimestamp = newerTimestamp;
@@ -142,17 +146,41 @@ void SPoseFrom2d::computeRegistration(::fwCore::HiResClock::HiResClockType times
                 for(size_t i = 0; i < this->getKeyGroupSize(s_MARKERTL_INPUT); ++i)
                 {
                     auto markerTL = this->getInput< ::arData::MarkerTL >(s_MARKERTL_INPUT, i);
-                    const CSPTR(::arData::MarkerTL::BufferType) buffer = markerTL->getClosestBuffer(newerTimestamp);
 
-                    if(buffer->isPresent(markerIndex))
+                    float ptsXYAverage[8];
+                    memset(ptsXYAverage, 0, 8 * sizeof(float));
+                    unsigned int count = 0;
+
+                    auto timestamp = newerTimestamp;
+                    for(int i = 0; i < 10; ++i)
                     {
-                        const float* registrationCVBuffer = buffer->getElement(markerIndex);
+                        const CSPTR(::arData::MarkerTL::BufferType) buffer = markerTL->getClosestBuffer(timestamp,
+                                                                                                        ::arData::BufferTL::PAST);
+                        if(buffer && buffer->isPresent(markerIndex))
+                        {
+                            timestamp = buffer->getTimestamp();
+                            const float* registrationCVBuffer = buffer->getElement(markerIndex);
+
+                            float ptsXY[8];
+                            memcpy(ptsXY, registrationCVBuffer, 8 * sizeof(float));
+
+                            for(int k = 0; k < 8; ++k)
+                            {
+                                ptsXYAverage[k] = (ptsXYAverage[k] * count + ptsXY[k]) / (count + 1);
+                            }
+                            ++count;
+                        }
+                        timestamp = timestamp - 1;
+                    }
+
+                    if(count)
+                    {
 
                         Marker currentMarker;
                         for(size_t i = 0; i < 4; ++i)
                         {
-                            currentMarker.corners2D.push_back( ::cv::Point2f(registrationCVBuffer[i*2],
-                                                                             registrationCVBuffer[i*2+1]));
+                            currentMarker.corners2D.push_back( ::cv::Point2f(ptsXYAverage[i*2],
+                                                                             ptsXYAverage[i*2+1]));
                         }
                         markers.push_back(currentMarker);
                     }
